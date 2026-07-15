@@ -13,12 +13,9 @@ import json
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from .iot.const import (SUPPORTED_PLATFORMS)
 from homeassistant.helpers.event import async_call_later
+from .iot.const import (SUPPORTED_PLATFORMS, DOMAIN, CLOUD_SERVERS_DOMAIN, CLOUD_SERVERS_PATH)
 from .iot.device_class import Discovery
-
-
-from .iot.const import (DOMAIN, CLOUD_SERVERS_DOMAIN, CLOUD_SERVERS_PATH)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,15 +32,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     expires_in = entry.data.get("expires_in")
 
     async def dynamic_task():
-        """周期性任务，执行后修改下一次运行时间"""
-        #refresh token
+        """Periodically refresh token and reschedule next refresh."""
         expires_in = await refresh_token_handle(hass, entry)
 
         async_call_later(hass, timedelta(seconds=expires_in), dynamic_task)
 
     async_call_later(hass, timedelta(seconds=expires_in), dynamic_task)
 
-    _LOGGER.debug('家庭信息:%s,%s,%s',family_id,token,cloud_server)
+    _LOGGER.debug('Family info: %s, %s, %s', family_id, token, cloud_server)
 
     await async_get_devices(hass, token, cloud_server, entry)
 
@@ -60,7 +56,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
 
 async def async_get_devices(hass: HomeAssistant, token, cloud_server,
                             entry: ConfigEntry):
-    """Device Dsicover """
+    """Discover and register devices from cloud server."""
     url = CLOUD_SERVERS_DOMAIN[cloud_server] + CLOUD_SERVERS_PATH["discover"]
     random_uuid = uuid.uuid4()
     header = {}
@@ -91,11 +87,22 @@ async def async_get_devices(hass: HomeAssistant, token, cloud_server,
                 _LOGGER.debug(f"discoverDev:,{res}")
                 discovery = Discovery.parse_raw(res)
                 device_category_map = defaultdict(list)
-                for device in discovery.event.endpoints:
-                    device_type = device.displayCategories[0]
 
-                    tmp_dev_list = device_category_map[device_type]
-                    tmp_dev_list.append(device)
+                # Safely check for API-level payload errors
+                if discovery.event and discovery.event.payload and discovery.event.payload.status != 0:
+                    _LOGGER.error("API discovery returned status code %s: %s", discovery.event.payload.status, discovery.event.payload.type)
+                    raise ValueError(f"API discovery error: status={discovery.event.payload.status}, type={discovery.event.payload.type}")
+
+                if not discovery.event or not discovery.event.endpoints:
+                    _LOGGER.warning("No endpoints found or API response was null")
+                else:
+                    for device in discovery.event.endpoints:
+                        if not device.displayCategories:
+                            continue
+                        device_type = device.displayCategories[0]
+
+                        tmp_dev_list = device_category_map[device_type]
+                        tmp_dev_list.append(device)
 
                 if 'devices' not in hass.data[DOMAIN]:
                     hass.data[DOMAIN]['devices'] = {}
@@ -105,8 +112,8 @@ async def async_get_devices(hass: HomeAssistant, token, cloud_server,
                 await hass.config_entries.async_forward_entry_setups(
                     entry, SUPPORTED_PLATFORMS)
         except aiohttp.ClientError as e:
-            _LOGGER.error(str(e))
-            raise ValueError()
+            _LOGGER.error("Failed to discover devices: %s", str(e))
+            raise
 
 
 async def refresh_token_handle(hass: HomeAssistant, entry: ConfigEntry) -> int:
@@ -123,17 +130,17 @@ async def refresh_token_handle(hass: HomeAssistant, entry: ConfigEntry) -> int:
     
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(url=url,headers=header) as response:
+            async with session.post(url=url, headers=header) as response:
                 if response.status != 200:
-                    raise ValueError(
-                        _LOGGER.error(f"invalid res status:{response.status}"))
+                    _LOGGER.error("Invalid response status: %s", response.status)
+                    raise ValueError(f"Invalid response status: {response.status}")
 
                 response_data = await response.json()
                 _LOGGER.debug(response_data)
 
                 if response_data["expires_in"] == 0:
-                    raise ValueError(
-                        _LOGGER.error(f"server_validation_failed:{response}"))
+                    _LOGGER.error("Server validation failed: %s", response)
+                    raise ValueError("Server validation failed")
                 hass.config_entries.async_update_entry(
                     entry,
                     data={
@@ -145,7 +152,5 @@ async def refresh_token_handle(hass: HomeAssistant, entry: ConfigEntry) -> int:
                 )
                 return response_data["expires_in"] // 2
         except aiohttp.ClientError as e:
-
-            raise ValueError(_LOGGER.error(f"http err:{str(e)}"))
-
-    return
+            _LOGGER.error("HTTP error during token refresh: %s", str(e))
+            raise ValueError(f"HTTP error: {str(e)}")

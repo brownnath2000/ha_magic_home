@@ -3,7 +3,7 @@
 BroadLink Magic Home Integration for Home Assistant
 # Home Assistant Magic Home Integration
 
-[English](./README.md) | [Simplified Chinese](./doc/README_zh.md)
+[English](./README.md)
 
 Magic Home Integration is an officially supported Home Assistant integration component from broadlink Associates that allows you to use the integration with an already supported broadlink Associates Magic Home IoT smart device in Home Assistant.
 

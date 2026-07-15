@@ -14,9 +14,8 @@ from .iot.device_class import (Endpoint, Capability)
 from .iot.common import control_req
 
 from homeassistant.components.light import (
-    ATTR_BRIGHTNESS, ATTR_COLOR_TEMP_KELVIN, LightEntity, LightEntityFeature,
-    COLOR_MODE_COLOR_TEMP,
-    COLOR_MODE_RGB, COLOR_MODE_BRIGHTNESS)
+    ATTR_BRIGHTNESS, ATTR_COLOR_TEMP_KELVIN, ATTR_RGB_COLOR, LightEntity, LightEntityFeature,
+    ColorMode)
 
 from .iot.const import (DOMAIN)
 
@@ -66,6 +65,10 @@ class Light(LightEntity):
         # self._attr_supported_features |= LightEntityFeature.EFFECT
         # self._attr_effect_list = ["Rainbow", "Blink", "Pulse"]
 
+        self._attr_brightness = None
+        self._attr_color_temp_kelvin = None
+        self._attr_rgb_color = None
+
         for capability in device.capabilities:
             for support in capability.actions.supported:
                 self._capability_map[support.name] = capability
@@ -73,13 +76,29 @@ class Light(LightEntity):
                 continue
             for support in capability.properties.supported:
                 if support.name == 'colortemp':
-                    self._attr_supported_color_modes.add(COLOR_MODE_COLOR_TEMP)
+                    self._attr_supported_color_modes.add(ColorMode.COLOR_TEMP)
                     self._attr_min_color_temp_kelvin = 2700
                     self._attr_max_color_temp_kelvin = 6500
                 elif support.name == 'color':
-                    self._attr_supported_color_modes.add(COLOR_MODE_RGB)
+                    self._attr_supported_color_modes.add(ColorMode.RGB)
                 elif support.name == 'brightness':
-                    self._attr_supported_color_modes.add(COLOR_MODE_BRIGHTNESS)
+                    self._attr_supported_color_modes.add(ColorMode.BRIGHTNESS)
+
+        # Complies with Home Assistant color mode validation rules
+        if len(self._attr_supported_color_modes) > 1 and ColorMode.BRIGHTNESS in self._attr_supported_color_modes:
+            self._attr_supported_color_modes.remove(ColorMode.BRIGHTNESS)
+        if not self._attr_supported_color_modes:
+            self._attr_supported_color_modes.add(ColorMode.ONOFF)
+
+        # Determine active color mode
+        if ColorMode.COLOR_TEMP in self._attr_supported_color_modes:
+            self._attr_color_mode = ColorMode.COLOR_TEMP
+        elif ColorMode.RGB in self._attr_supported_color_modes:
+            self._attr_color_mode = ColorMode.RGB
+        elif ColorMode.BRIGHTNESS in self._attr_supported_color_modes:
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+        else:
+            self._attr_color_mode = ColorMode.ONOFF
 
     async def async_turn_on(self, **kwargs):
         """开启设备"""
@@ -95,9 +114,17 @@ class Light(LightEntity):
             _LOGGER.debug(key)
             _LOGGER.debug(value)
             if key == ATTR_BRIGHTNESS:
+                self._attr_brightness = value
                 value = math.ceil((value / 255) * 100)
-            if key == ATTR_COLOR_TEMP_KELVIN:
+            elif key == ATTR_COLOR_TEMP_KELVIN:
+                self._attr_color_temp_kelvin = value
                 value = math.ceil((value - 2700) / (6500 - 2700) * 100)
+                if ColorMode.COLOR_TEMP in self._attr_supported_color_modes:
+                    self._attr_color_mode = ColorMode.COLOR_TEMP
+            elif key == ATTR_RGB_COLOR:
+                self._attr_rgb_color = value
+                if ColorMode.RGB in self._attr_supported_color_modes:
+                    self._attr_color_mode = ColorMode.RGB
 
             await control_req(self, key, value)
 
@@ -121,3 +148,18 @@ class Light(LightEntity):
     def is_on(self):
         """Return if the light is on."""
         return self._attr_is_on
+
+    @property
+    def brightness(self) -> int | None:
+        """Return the brightness of this light between 0..255."""
+        return self._attr_brightness
+
+    @property
+    def color_temp_kelvin(self) -> int | None:
+        """Return the color temperature in Kelvin."""
+        return self._attr_color_temp_kelvin
+
+    @property
+    def rgb_color(self) -> tuple[int, int, int] | None:
+        """Return the rgb color value [int, int, int]."""
+        return self._attr_rgb_color
